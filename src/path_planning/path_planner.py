@@ -66,23 +66,14 @@ class UnifiedPathPlanner:
             raise ValueError(f"Unknown algorithm: {algorithm}. Available: 'astar', 'dijkstra'")
     
     def compare_algorithms(self, 
-                          start: Tuple[int, int],
-                          goal: Tuple[int, int],
-                          occupancy_grid: np.ndarray,
-                          algorithms: Optional[List[str]] = None,
-                          algorithm_configs: Optional[Dict[str, Dict]] = None) -> Dict[str, Tuple[Optional[List[Tuple[int, int]]], Dict[str, Any]]]:
+                        start: Tuple[int, int],
+                        goal: Tuple[int, int],
+                        occupancy_grid: np.ndarray,
+                        algorithms: Optional[List[str]] = None,
+                        algorithm_configs: Optional[Dict[str, Dict]] = None) -> Dict[str, Tuple[Optional[List[Tuple[int, int]]], Dict[str, Any]]]:
         """
         Compare multiple path planning algorithms on the same problem.
         
-        Args:
-            start: Start position (x, y)
-            goal: Goal position (x, y)
-            occupancy_grid: Occupancy grid
-            algorithms: List of algorithm names to compare
-            algorithm_configs: Configuration for each algorithm
-            
-        Returns:
-            Dictionary mapping algorithm names to (path, stats) tuples
         """
         if algorithms is None:
             algorithms = ['astar', 'dijkstra']
@@ -95,14 +86,58 @@ class UnifiedPathPlanner:
         
         results = {}
         
+        
         for algorithm in algorithms:
             try:
                 config = algorithm_configs.get(algorithm, {})
                 planner = self.get_planner(algorithm, **config)
+                
+                if algorithm == 'astar':
+                    from .astar import AStarPathPlanner
+                    planner = AStarPathPlanner(**config)
+                elif algorithm == 'dijkstra':
+                    from .dijkstra import DijkstraPathPlanner
+                    planner = DijkstraPathPlanner(**config)
+                else:
+                    # Fallback to get_planner for other algorithms
+                    planner = self.get_planner(algorithm, **config)
+                
+                
+                # Call find_path
                 path, stats = planner.find_path(start, goal, occupancy_grid)
+                
+                # Ensure stats always has required fields
+                if stats is None:
+                    stats = {'error': 'No stats returned', 'success': False}
+                
+                if 'success' not in stats:
+                    stats['success'] = path is not None
+                
+                if 'algorithm' not in stats:
+                    stats['algorithm'] = algorithm
+                    
+                # Add missing fields that might be expected
+                if path and 'path_length' not in stats:
+                    stats['path_length'] = len(path)
+                    
                 results[algorithm] = (path, stats)
+                
             except Exception as e:
                 results[algorithm] = (None, {'error': str(e), 'success': False})
+                import traceback
+                traceback.print_exc()
+                
+                error_stats = {
+                    'error': str(e), 
+                    'success': False,
+                    'algorithm': algorithm,
+                    'path_length': 0,
+                    'path_cost': float('inf'),
+                    'computation_time': 0.0,
+                    'nodes_explored': 0,
+                    'nodes_expanded': 0
+                }
+                results[algorithm] = (None, error_stats)
         
         return results
     
@@ -229,8 +264,14 @@ class PathPlanningComparator:
         print("\nSUCCESS RATES:")
         print("-" * 30)
         for algorithm, success_rate in analysis['success_rates'].items():
-            status = "✅ SUCCESS" if success_rate == 1.0 else "FAILED"
+            status = "✅ SUCCESS" if success_rate == 1.0 else "❌ FAILED"
             print(f"{algorithm.upper():<12}: {status}")
+        
+        # Show errors for failed algorithms
+        for algorithm, (path, stats) in results.items():
+            if path is None or not stats.get('success', False):
+                error_msg = stats.get('error', 'Unknown error')
+                print(f"   {algorithm.upper()} Error: {error_msg}")
         
         # Performance metrics
         successful_results = {alg: (path, stats) for alg, (path, stats) in results.items() 
@@ -342,6 +383,7 @@ class PathPlanningComparator:
                 axes[i].set_title(title)
                 axes[i].legend()
                 axes[i].grid(True, alpha=0.3)
+                axes[i].axis('off')
             
             plt.tight_layout()
             

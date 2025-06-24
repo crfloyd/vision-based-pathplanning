@@ -426,7 +426,9 @@ def main():
             if args.compare:
                 # Compare algorithms
                 print("Comparing algorithms...")
-                comparison = navigation_system.compare_algorithms(args.start, args.goal)
+                start_tuple = tuple(args.start)
+                goal_tuple = tuple(args.goal)
+                comparison = navigation_system.compare_algorithms(start_tuple, goal_tuple)
                 if comparison['success']:
                     PathPlanningComparator.print_comparison_report(comparison['results'])
                     PathPlanningComparator.visualize_comparison(
@@ -471,7 +473,9 @@ def main():
             if args.compare:
                 # Compare algorithms
                 print("Comparing algorithms...")
-                comparison = navigation_system.compare_algorithms(args.start, args.goal)
+                start_tuple = tuple(args.start)
+                goal_tuple = tuple(args.goal)
+                comparison = navigation_system.compare_algorithms(start_tuple, goal_tuple)
                 if comparison['success']:
                     PathPlanningComparator.print_comparison_report(comparison['results'])
                     PathPlanningComparator.visualize_comparison(
@@ -484,8 +488,12 @@ def main():
             else:
                 # Single algorithm
                 print(f"Planning navigation with {args.algorithm}...")
+                start = tuple(args.start)
+                goal = tuple(args.goal)
+                
+                print(f"Planning navigation with {args.algorithm}...")
                 nav_result = navigation_system.plan_navigation(
-                    tuple(args.start), tuple(args.goal), algorithm=args.algorithm, smooth_path=False
+                    start, goal, algorithm=args.algorithm, smooth_path=False
                 )
                 if nav_result['success']:
                     print("Navigation successful!")
