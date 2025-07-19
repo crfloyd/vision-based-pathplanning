@@ -2,7 +2,10 @@
 Visual Navigation System - Main Integration Module
 This is the main entry point that integrates image processing and path planning
 """
-
+import os
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -55,7 +58,12 @@ class VisualNavigationSystem:
             default_planner_config.update(planner_config)
         
         # Initialize components
-        self.processor = FloorPlanProcessor(**default_processor_config)
+        self.processor = FloorPlanProcessor(
+            obstacle_threshold=default_processor_config['obstacle_threshold'],
+            blur_kernel_size=default_processor_config['blur_kernel_size'],
+            canny_low=default_processor_config['canny_low'],
+            canny_high=default_processor_config['canny_high']
+        )
         self.unified_planner = UnifiedPathPlanner()
         self.planner_config = default_planner_config
         
@@ -64,15 +72,86 @@ class VisualNavigationSystem:
         self.current_original_image = None
         self.current_processed_image = None
         self.navigation_results = []
+
+    def visualize_with_cv2(self, navigation_result: Dict, raw_frame: np.ndarray = None):
+        """
+        Non-blocking CV2-based visualization for real-time loop.
+        Shows 4 panels in one window + optional raw frame.
+        """
+        # Get images from current state (even if nav failed, show processing)
+        original = self.current_original_image
+        processed = self.current_processed_image
+        occupancy = self.current_occupancy_grid
+        start = navigation_result.get('start')
+        goal = navigation_result.get('goal')
+        path = navigation_result.get('path') if navigation_result['success'] else None
+        
+        # Convert to BGR for cv2
+        if len(original.shape) == 2:
+            original_bgr = cv2.cvtColor(original, cv2.COLOR_GRAY2BGR)
+        else:
+            original_bgr = cv2.cvtColor(original, cv2.COLOR_RGB2BGR)
+        
+        processed_bgr = cv2.cvtColor(processed, cv2.COLOR_GRAY2BGR) if len(processed.shape) == 2 else cv2.cvtColor(processed, cv2.COLOR_RGB2BGR)
+        
+        # Occupancy grid: Map 0/1 to colors (blue free, red obstacle)
+        occupancy_vis = np.zeros((occupancy.shape[0], occupancy.shape[1], 3), dtype=np.uint8)
+        occupancy_vis[occupancy == 0] = [255, 0, 0]  # Blue free (BGR)
+        occupancy_vis[occupancy == 1] = [0, 0, 255]  # Red obstacle
+        
+        # Path planning vis: Copy occupancy, draw path/start/goal if available
+        path_vis = occupancy_vis.copy()
+        if path:
+            for i in range(len(path) - 1):
+                pt1 = (path[i][1], path[i][0])  # (y,x) for cv2
+                pt2 = (path[i+1][1], path[i+1][0])
+                cv2.line(path_vis, pt1, pt2, (0, 255, 0), 2)  # Green path
+            title_text = f"Path (Len: {len(path)})"
+        else:
+            title_text = "No Path Found"
+        
+        if start:
+            cv2.circle(path_vis, (start[1], start[0]), 5, (0, 255, 0), -1)  # Green start
+        if goal:
+            cv2.circle(path_vis, (goal[1], goal[0]), 5, (0, 0, 255), -1)  # Red goal
+        
+        # Combine into 4-panel horizontal stack
+        panel_height = max(original_bgr.shape[0], processed_bgr.shape[0], occupancy_vis.shape[0], path_vis.shape[0])
+        panel_width = original_bgr.shape[1]  # Assume uniform width after processing
+        
+        # Resize if needed (for consistency)
+        original_resized = cv2.resize(original_bgr, (panel_width, panel_height))
+        processed_resized = cv2.resize(processed_bgr, (panel_width, panel_height))
+        occupancy_resized = cv2.resize(occupancy_vis, (panel_width, panel_height))
+        path_resized = cv2.resize(path_vis, (panel_width, panel_height))
+        
+        combined = np.hstack([original_resized, processed_resized, occupancy_resized, path_resized])
+        
+        # Add titles (text overlays)
+        cv2.putText(combined, "Original", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(combined, "Edges", (panel_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(combined, "Occupancy", (2 * panel_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        cv2.putText(combined, title_text, (3 * panel_width + 10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        cv2.imshow('Navigation Pipeline', combined)
+        
+        # Optional raw frame in separate window
+        if raw_frame is not None:
+            cv2.imshow('Raw Camera', cv2.cvtColor(raw_frame, cv2.COLOR_RGB2BGR))
     
     def load_and_process_floor_plan(self, 
-                                   image_path: str,  # Note: this is actually image_path_or_array, but keeping name for compat
-                                   edge_method: str = 'canny',
-                                   occupancy_method: str = 'threshold',
-                                   apply_morphology: bool = True,
-                                   is_real_image: bool = False,  # New optional arg
-                                   homography_matrix: Optional[np.ndarray] = None  # New optional arg
-                                   ) -> Dict:
+                               image_path: str,
+                               edge_method: str = 'canny',
+                               occupancy_method: str = 'threshold',
+                               apply_morphology: bool = True,
+                               is_real_image: bool = False,
+                               homography_matrix: Optional[np.ndarray] = None,
+                               blur_size: int = 7,  # New
+                               canny_low: int = 100,
+                               canny_high: int = 200,
+                               contour_min: int = 500,  # New for detect_contours
+                               morph_size: int = 5,  # New
+                               fast_mode: bool = False) -> Dict:
         """
         Load and process a floor plan image or array. Updated to handle real images and homography.
         """
@@ -82,7 +161,7 @@ class VisualNavigationSystem:
             # Process the floor plan, passing new args
             original, processed, occupancy_grid = self.processor.process_floor_plan(
                 image_path, edge_method, occupancy_method, apply_morphology,
-                is_real_image=is_real_image, homography_matrix=homography_matrix
+                is_real_image=is_real_image, homography_matrix=homography_matrix, fast_mode=fast_mode
             )
             
             processing_time = time.time() - start_time
@@ -91,6 +170,9 @@ class VisualNavigationSystem:
             self.current_original_image = original
             self.current_processed_image = processed
             self.current_occupancy_grid = occupancy_grid
+            self.processor.blur_kernel_size = blur_size
+            self.processor.canny_low = canny_low
+            self.processor.canny_high = canny_high
             
             # Calculate statistics (existing)
             total_pixels = occupancy_grid.size
@@ -396,51 +478,98 @@ def main():
     parser.add_argument('--synthetic', choices=['simple', 'hallway', 'complex'],
                        help='Create synthetic floor plan')
     parser.add_argument('--camera', action='store_true', help='Use camera input')
+    parser.add_argument('--source', type=int, default=0, help='Camera source index (0=built-in, 1 or 2=Continuity iPhone)')
     parser.add_argument('--homography', type=float, nargs=16, 
-                    help='16 floats for homography: src1x src1y src2x src2y src3x src3y src4x src4y dst1x dst1y dst2x dst2y dst3x dst3y dst4x dst4y')
-
+                       help='16 floats for homography: src1x src1y src2x src2y src3x src3y src4x src4y dst1x dst1y dst2x dst2y dst3x dst3y dst4x dst4y')
+    parser.add_argument('--fast', action='store_true', help='Fast mode: Skip heavy processing for higher FPS')
+    parser.add_argument('--blur_size', type=int, default=7, help='Blur kernel size (odd number)')
+    parser.add_argument('--canny_low', type=int, default=100, help='Canny low threshold')
+    parser.add_argument('--canny_high', type=int, default=200, help='Canny high threshold')
+    parser.add_argument('--contour_min', type=int, default=500, help='Min contour area for obstacles')
+    parser.add_argument('--morph_size', type=int, default=5, help='Morphology kernel size')
+    parser.add_argument('--plan_every', type=int, default=5, help='Run pathfinding every N frames for better FPS (1=every frame)')
+    
     args = parser.parse_args()
     navigation_system = VisualNavigationSystem()
 
-    if args.camera:
-        camera = CameraCapture(source=0)  # Webcam
-        processor = FloorPlanProcessor()  # For homography computation
+    if args.camera and args.start and args.goal:  # Explicitly allow camera with start/goal
+        print("Running in camera mode...")
+        camera = CameraCapture(source=args.source)
+        processor = FloorPlanProcessor()
         H = None
         if args.homography:
             H = processor.compute_homography(args.homography)
-        
+        frame_count = 0
+        last_nav_result = None
         print("Starting camera navigation loop (press Q to quit)...")
         while True:
+            start_time = time.time()
+            
             frame = camera.get_frame()
             if frame is None:
+                print("Debug: Frame is None - breaking.")
                 break
             
-            # Process as real image
+            print("Debug: Starting processing...")
             processing_result = navigation_system.load_and_process_floor_plan(
                 frame,
                 edge_method='canny',
                 occupancy_method='adaptive',
                 apply_morphology=True,
                 is_real_image=True,
-                homography_matrix=H
+                homography_matrix=H,
+                fast_mode=args.fast
             )
+            print(f"Debug: Processing success: {processing_result['success']}")
+            if 'error' in processing_result:
+                print(f"Debug: Processing error: {processing_result['error']}")
+            
+            # Always show raw camera
+            if frame is not None:
+                cv2.imshow('Raw Camera', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
             
             if processing_result['success'] and args.start and args.goal:
-                nav_result = navigation_system.plan_navigation(
-                    tuple(args.start), tuple(args.goal), algorithm=args.algorithm
-                )
-                if nav_result['success']:
-                    navigation_system.visualize_complete_pipeline(nav_result)
+                # Check if start/goal are free... (existing code)
+                
+                frame_count += 1
+                if frame_count % args.plan_every == 0:  # Only plan every N frames
+                    print("Debug: Starting navigation planning... (this frame)")
+                    nav_result = navigation_system.plan_navigation(
+                        tuple(args.start), tuple(args.goal), algorithm=args.algorithm
+                    )
+                    # print(f"Debug: Navigation success: {nav_result['success']}")
+                    if 'error' in nav_result:
+                        print(f"Debug: Navigation error: {nav_result['error']}")
+                        if 'stats' in nav_result:
+                            print(f"Debug: Stats: {nav_result['stats']}")
+                    
+                    if nav_result['success']:
+                        last_nav_result = nav_result  # Cache for skip frames
+                else:
+                    print("Debug: Skipping planning this frame for FPS.")
+                    nav_result = last_nav_result or {'success': False, 'error': 'No path yet', 'path': [], 'start': args.start, 'goal': args.goal}  # Fallback
+                
+                # Call viz with (cached) nav_result
+                print("Debug: Calling visualize_with_cv2...")
+                cv2.namedWindow('Navigation Pipeline', cv2.WINDOW_NORMAL)
+                navigation_system.visualize_with_cv2(nav_result, raw_frame=frame)
+                print("Debug: Visualize called - should show window now.")
             
-            # Show raw feed
-            cv2.imshow('Raw Camera', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            if cv2.waitKey(1) & 0xFF == ord('q'):
+            # Wait for key (non-blocking, pumps GUI events)
+            key = cv2.waitKey(1)
+            if key & 0xFF == ord('q'):
+                print("Debug: Q pressed - breaking.")
                 break
+            elif key != -1:
+                print(f"Debug: Key pressed: {key}")
+            elapsed = time.time() - start_time
+            fps = 1.0 / elapsed if elapsed > 0 else 0
+            print(f"FPS: {fps:.2f}")
         
         camera.release()
         cv2.destroyAllWindows()
-    
-    if args.synthetic:
+
+    elif args.synthetic:
         # Create and process synthetic floor plan
         synthetic_image = create_synthetic_floor_plan(room_config=args.synthetic)
         temp_path = f'synthetic_{args.synthetic}.png'
@@ -480,7 +609,7 @@ def main():
                     tuple(args.start), tuple(args.goal), algorithm=args.algorithm, smooth_path=False
                 )
                 if nav_result['success']:
-                    print("Navigation successful!")
+                    # print("Navigation successful!")
                     print(f"   Path length: {nav_result['path_length_grid']} steps")
                     print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
                     print(f"   Algorithm: {nav_result['algorithm']}")
@@ -531,7 +660,7 @@ def main():
                     start, goal, algorithm=args.algorithm, smooth_path=False
                 )
                 if nav_result['success']:
-                    print("Navigation successful!")
+                    # print("Navigation successful!")
                     print(f"   Path length: {nav_result['path_length_grid']} steps")
                     print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
                     print(f"   Algorithm: {nav_result['algorithm']}")
@@ -549,7 +678,7 @@ def main():
                 print("Missing start/goal coordinates. Use --start X Y --goal X Y")
     
     else:
-        print("Please specify --image or --synthetic option")
+        print("Please specify --image, --synthetic, or --camera with --start and --goal options")
         parser.print_help()
 
 

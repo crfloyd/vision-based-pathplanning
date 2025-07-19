@@ -20,9 +20,11 @@ class FloorPlanProcessor:
     
     def __init__(self, 
                  obstacle_threshold: int = 127,
-                 blur_kernel_size: int = 5,
-                 canny_low: int = 50,
-                 canny_high: int = 150):
+                 blur_kernel_size: int = 9,  # Bigger blur to kill plank noise
+                 canny_low: int = 150,  # Even higher low to skip weak gradients
+                 canny_high: int = 250,  # Tighter high for major edges only
+                 contour_min: int = 500,
+                 morph_size: int = 7):  # Larger for aggressive cleaning
         """
         Initialize the floor plan processor.
         
@@ -31,11 +33,16 @@ class FloorPlanProcessor:
             blur_kernel_size: Gaussian blur kernel size for noise reduction
             canny_low: Lower threshold for Canny edge detection
             canny_high: Upper threshold for Canny edge detection
+            contour_min: Min contour area to consider as obstacle (for real images)
+            morph_size: Kernel size for morphological ops (close/open)
         """
+        
         self.obstacle_threshold = obstacle_threshold
         self.blur_kernel_size = blur_kernel_size
         self.canny_low = canny_low
         self.canny_high = canny_high
+        self.contour_min = contour_min
+        self.morph_size = morph_size
         
     def load_image(self, image_path: str) -> np.ndarray:
         """
@@ -87,33 +94,27 @@ class FloorPlanProcessor:
     
     def detect_edges(self, image: np.ndarray, method: str = 'canny') -> np.ndarray:
         """
-        Detect edges in the floor plan image.
-        
-        Args:
-            image: Preprocessed grayscale image
-            method: Edge detection method ('canny', 'sobel', 'laplacian')
-            
-        Returns:
-            Binary edge image
+        Detect edges in the image. Updated with auto-threshold for Canny.
         """
-        if method.lower() == 'canny':
-            edges = cv2.Canny(image, self.canny_low, self.canny_high)
-        elif method.lower() == 'sobel':
-            # Sobel edge detection
+        if method == 'canny':
+            # Auto-threshold based on median (better for varying scenes)
+            sigma = 0.33  # Common heuristic
+            med = np.median(image)
+            low = int(max(0, (1.0 - sigma) * med))
+            high = int(min(255, (1.0 + sigma) * med))
+            return cv2.Canny(image, low, high)  # Was fixed 50/150, now adaptive
+        
+        elif method == 'sobel':
             sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
             sobely = cv2.Sobel(image, cv2.CV_64F, 0, 1, ksize=3)
-            edges = np.sqrt(sobelx**2 + sobely**2)
-            edges = np.uint8(edges / edges.max() * 255)
-            _, edges = cv2.threshold(edges, self.obstacle_threshold, 255, cv2.THRESH_BINARY)
-        elif method.lower() == 'laplacian':
-            # Laplacian edge detection
-            edges = cv2.Laplacian(image, cv2.CV_64F)
-            edges = np.uint8(np.absolute(edges))
-            _, edges = cv2.threshold(edges, self.obstacle_threshold, 255, cv2.THRESH_BINARY)
+            sobel = np.sqrt(sobelx**2 + sobely**2)
+            return np.uint8(np.absolute(sobel))
+        
+        elif method == 'laplacian':
+            return cv2.Laplacian(image, cv2.CV_64F)
+        
         else:
             raise ValueError(f"Unsupported edge detection method: {method}")
-        
-        return edges
     
     def compute_homography(self, calibration_points):
         """
@@ -159,7 +160,7 @@ class FloorPlanProcessor:
         
         # Fill large contours as obstacles (filter small noise)
         for cnt in contours:
-            if cv2.contourArea(cnt) > 100:  # Threshold for min obstacle size
+            if cv2.contourArea(cnt) > self.contour_min:  # Use the instance var for tuning
                 cv2.drawContours(mask, [cnt], -1, 255, -1)
         
         return mask
@@ -198,18 +199,20 @@ class FloorPlanProcessor:
     def apply_morphological_operations(self, 
                                      occupancy_grid: np.ndarray,
                                      operation: str = 'close',
-                                     kernel_size: int = 3) -> np.ndarray:
+                                     kernel_size: int = None) -> np.ndarray:
         """
         Apply morphological operations to clean up the occupancy grid.
         
         Args:
             occupancy_grid: Binary occupancy grid
             operation: Morphological operation ('close', 'open', 'dilate', 'erode')
-            kernel_size: Size of the morphological kernel
+            kernel_size: Size of the morphological kernel (uses self.morph_size if None)
             
         Returns:
             Cleaned occupancy grid
         """
+        if kernel_size is None:
+            kernel_size = self.morph_size  # Use instance var for tuning
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         
         if operation == 'close':
@@ -229,40 +232,14 @@ class FloorPlanProcessor:
         
         return result
     
-    def preprocess_real_image(self, image: np.ndarray) -> np.ndarray:
-        """
-        Enhanced preprocessing for real camera images: grayscale, blur, and CLAHE for contrast.
-        """
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if len(image.shape) == 3 else image
-        blurred = cv2.GaussianBlur(gray, (self.blur_kernel_size, self.blur_kernel_size), 0)
-        
-        # Adaptive histogram equalization for better contrast in varying lighting
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(blurred)
-        return enhanced
-
-    def detect_contours_for_obstacles(self, edges: np.ndarray) -> np.ndarray:
-        """
-        Use contours to fill obstacles in real images (helps with furniture detection).
-        Returns binary mask where 1=obstacle.
-        """
-        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        mask = np.zeros_like(edges)
-        
-        # Fill large contours as obstacles (filter small noise)
-        for cnt in contours:
-            if cv2.contourArea(cnt) > 100:  # Threshold for min obstacle size
-                cv2.drawContours(mask, [cnt], -1, 255, -1)
-        
-        return mask
-
     def process_floor_plan(self, 
-                           image_path_or_array,  # Accepts path or np.array
+                           image_path_or_array, 
                            edge_method: str = 'canny',
-                           occupancy_method: str = 'adaptive',  # Default to adaptive for real imgs
+                           occupancy_method: str = 'adaptive', 
                            apply_morphology: bool = True,
                            is_real_image: bool = False,
-                           homography_matrix: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                           homography_matrix: Optional[np.ndarray] = None,
+                           fast_mode: bool = False):
         """
         Updated pipeline: Handles path or array input, optional homography, real-image mode.
         """
@@ -284,17 +261,20 @@ class FloorPlanProcessor:
         else:
             processed_image = self.detect_edges(preprocessed, edge_method)
         
-        if is_real_image:
+        if is_real_image and not fast_mode:
+            # For real images, add contour detection after edges
             processed_image = self.detect_contours_for_obstacles(processed_image)
         
         occupancy_grid = self.create_occupancy_grid(processed_image, occupancy_method)
         
-        if apply_morphology:
-            occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'close')
+        if apply_morphology and not fast_mode:
+            # Add extra opening first to remove small noise like planks
             occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'open')
+            occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'close')
+            occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'open')  # Double open if needed
         
         return original_image, processed_image, occupancy_grid
-    
+
     def visualize_processing_steps(self, 
                                  original: np.ndarray,
                                  processed: np.ndarray,
