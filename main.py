@@ -6,6 +6,7 @@ This is the main entry point that integrates image processing and path planning
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
+import numpy as np
 import time
 import json
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import Dict, List, Tuple, Optional
 import argparse
 
 # Import our custom modules
+from src.image_processing.camera_capture import CameraCapture
 from src.image_processing.floor_plan_processor import FloorPlanProcessor, create_synthetic_floor_plan
 from src.path_planning.path_planner import UnifiedPathPlanner, PathPlanningComparator
 
@@ -64,38 +66,33 @@ class VisualNavigationSystem:
         self.navigation_results = []
     
     def load_and_process_floor_plan(self, 
-                                   image_path: str,
+                                   image_path: str,  # Note: this is actually image_path_or_array, but keeping name for compat
                                    edge_method: str = 'canny',
                                    occupancy_method: str = 'threshold',
-                                   apply_morphology: bool = True) -> Dict:
+                                   apply_morphology: bool = True,
+                                   is_real_image: bool = False,  # New optional arg
+                                   homography_matrix: Optional[np.ndarray] = None  # New optional arg
+                                   ) -> Dict:
         """
-        Load and process a floor plan image.
-        
-        Args:
-            image_path: Path to floor plan image
-            edge_method: Edge detection method
-            occupancy_method: Occupancy grid creation method
-            apply_morphology: Whether to apply morphological operations
-            
-        Returns:
-            Processing results dictionary
+        Load and process a floor plan image or array. Updated to handle real images and homography.
         """
         try:
             start_time = time.time()
             
-            # Process the floor plan
+            # Process the floor plan, passing new args
             original, processed, occupancy_grid = self.processor.process_floor_plan(
-                image_path, edge_method, occupancy_method, apply_morphology
+                image_path, edge_method, occupancy_method, apply_morphology,
+                is_real_image=is_real_image, homography_matrix=homography_matrix
             )
             
             processing_time = time.time() - start_time
             
-            # Store results
+            # Store results (existing)
             self.current_original_image = original
             self.current_processed_image = processed
             self.current_occupancy_grid = occupancy_grid
             
-            # Calculate statistics
+            # Calculate statistics (existing)
             total_pixels = occupancy_grid.size
             obstacle_pixels = np.sum(occupancy_grid)
             free_pixels = total_pixels - obstacle_pixels
@@ -386,7 +383,6 @@ def create_test_scenarios() -> List[Dict]:
 
 
 def main():
-    """Main function for command-line interface."""
     parser = argparse.ArgumentParser(description='Visual Navigation System')
     parser.add_argument('--image', type=str, help='Path to floor plan image')
     parser.add_argument('--start', type=int, nargs=2, metavar=('X', 'Y'), 
@@ -399,11 +395,50 @@ def main():
                        help='Compare multiple algorithms')
     parser.add_argument('--synthetic', choices=['simple', 'hallway', 'complex'],
                        help='Create synthetic floor plan')
-    
+    parser.add_argument('--camera', action='store_true', help='Use camera input')
+    parser.add_argument('--homography', type=float, nargs=16, 
+                    help='16 floats for homography: src1x src1y src2x src2y src3x src3y src4x src4y dst1x dst1y dst2x dst2y dst3x dst3y dst4x dst4y')
+
     args = parser.parse_args()
-    
-    # Initialize system
     navigation_system = VisualNavigationSystem()
+
+    if args.camera:
+        camera = CameraCapture(source=0)  # Webcam
+        processor = FloorPlanProcessor()  # For homography computation
+        H = None
+        if args.homography:
+            H = processor.compute_homography(args.homography)
+        
+        print("Starting camera navigation loop (press Q to quit)...")
+        while True:
+            frame = camera.get_frame()
+            if frame is None:
+                break
+            
+            # Process as real image
+            processing_result = navigation_system.load_and_process_floor_plan(
+                frame,
+                edge_method='canny',
+                occupancy_method='adaptive',
+                apply_morphology=True,
+                is_real_image=True,
+                homography_matrix=H
+            )
+            
+            if processing_result['success'] and args.start and args.goal:
+                nav_result = navigation_system.plan_navigation(
+                    tuple(args.start), tuple(args.goal), algorithm=args.algorithm
+                )
+                if nav_result['success']:
+                    navigation_system.visualize_complete_pipeline(nav_result)
+            
+            # Show raw feed
+            cv2.imshow('Raw Camera', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        
+        camera.release()
+        cv2.destroyAllWindows()
     
     if args.synthetic:
         # Create and process synthetic floor plan

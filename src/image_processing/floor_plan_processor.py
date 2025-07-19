@@ -8,7 +8,9 @@ import numpy as np
 from PIL import Image
 from typing import Tuple, Optional, Union
 import matplotlib.pyplot as plt
-
+import cv2
+import numpy as np
+from typing import Optional, Tuple
 
 class FloorPlanProcessor:
     """
@@ -113,6 +115,55 @@ class FloorPlanProcessor:
         
         return edges
     
+    def compute_homography(self, calibration_points):
+        """
+        Compute homography matrix for perspective correction.
+        calibration_points: List of 16 floats: src (8 coords) then dst (8 coords)
+        """
+        if len(calibration_points) != 16:
+            raise ValueError("Need 16 values: 8 for 4 source points (x,y pairs), 8 for 4 destination points.")
+        
+        src_pts = np.array(calibration_points[:8], dtype="float32").reshape(-1, 2)  # Reshape to (4, 2)
+        dst_pts = np.array(calibration_points[8:], dtype="float32").reshape(-1, 2)
+        
+        H, _ = cv2.findHomography(src_pts, dst_pts)
+        return H
+
+    def apply_homography(self, image: np.ndarray, H: np.ndarray, output_size=(500, 500)) -> np.ndarray:
+        """
+        Apply homography to rectify image perspective.
+        image: Input image (RGB or grayscale)
+        H: Homography matrix from compute_homography
+        output_size: Desired output dimensions (width, height)
+        """
+        return cv2.warpPerspective(image, H, output_size)
+
+    def preprocess_real_image(self, image: np.ndarray) -> np.ndarray:
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if len(image.shape) == 3 else image
+        mean_brightness = np.mean(gray)
+        if mean_brightness < 50:  # Arbitrary threshold for "too dark"
+            print("Warning: Image is very dark (mean brightness {:.2f}). Adjust lighting for better detection.".format(mean_brightness))
+        
+        blurred = cv2.GaussianBlur(gray, (self.blur_kernel_size, self.blur_kernel_size), 0)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(blurred)
+        return enhanced
+
+    def detect_contours_for_obstacles(self, edges: np.ndarray) -> np.ndarray:
+        """
+        Use contours to fill obstacles in real images (helps with furniture detection).
+        Returns binary mask where 1=obstacle.
+        """
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(edges)
+        
+        # Fill large contours as obstacles (filter small noise)
+        for cnt in contours:
+            if cv2.contourArea(cnt) > 100:  # Threshold for min obstacle size
+                cv2.drawContours(mask, [cnt], -1, 255, -1)
+        
+        return mask
+    
     def create_occupancy_grid(self, 
                             image: np.ndarray, 
                             method: str = 'threshold') -> np.ndarray:
@@ -178,38 +229,66 @@ class FloorPlanProcessor:
         
         return result
     
+    def preprocess_real_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Enhanced preprocessing for real camera images: grayscale, blur, and CLAHE for contrast.
+        """
+        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY) if len(image.shape) == 3 else image
+        blurred = cv2.GaussianBlur(gray, (self.blur_kernel_size, self.blur_kernel_size), 0)
+        
+        # Adaptive histogram equalization for better contrast in varying lighting
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(blurred)
+        return enhanced
+
+    def detect_contours_for_obstacles(self, edges: np.ndarray) -> np.ndarray:
+        """
+        Use contours to fill obstacles in real images (helps with furniture detection).
+        Returns binary mask where 1=obstacle.
+        """
+        contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros_like(edges)
+        
+        # Fill large contours as obstacles (filter small noise)
+        for cnt in contours:
+            if cv2.contourArea(cnt) > 100:  # Threshold for min obstacle size
+                cv2.drawContours(mask, [cnt], -1, 255, -1)
+        
+        return mask
+
     def process_floor_plan(self, 
-                          image_path: str,
-                          edge_method: str = 'canny',
-                          occupancy_method: str = 'threshold',
-                          apply_morphology: bool = True) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+                           image_path_or_array,  # Accepts path or np.array
+                           edge_method: str = 'canny',
+                           occupancy_method: str = 'adaptive',  # Default to adaptive for real imgs
+                           apply_morphology: bool = True,
+                           is_real_image: bool = False,
+                           homography_matrix: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Complete pipeline to process a floor plan image.
-        
-        Args:
-            image_path: Path to the floor plan image
-            edge_method: Edge detection method
-            occupancy_method: Occupancy grid creation method
-            apply_morphology: Whether to apply morphological cleaning
-            
-        Returns:
-            Tuple of (original_image, processed_image, occupancy_grid)
+        Updated pipeline: Handles path or array input, optional homography, real-image mode.
         """
-        # Load and preprocess image
-        original_image = self.load_image(image_path)
-        preprocessed = self.preprocess_image(original_image)
+        if isinstance(image_path_or_array, str):
+            original_image = self.load_image(image_path_or_array)
+        else:
+            original_image = image_path_or_array  # Assume np.array from camera
         
-        # For synthetic floor plans, we can skip edge detection and use the image directly
+        if homography_matrix is not None:
+            original_image = self.apply_homography(original_image, homography_matrix)
+        
+        if is_real_image:
+            preprocessed = self.preprocess_real_image(original_image)
+        else:
+            preprocessed = self.preprocess_image(original_image)
+        
         if edge_method == 'none':
             processed_image = preprocessed
         else:
-            # Detect edges
             processed_image = self.detect_edges(preprocessed, edge_method)
         
-        # Create occupancy grid
+        if is_real_image:
+            processed_image = self.detect_contours_for_obstacles(processed_image)
+        
         occupancy_grid = self.create_occupancy_grid(processed_image, occupancy_method)
         
-        # Apply morphological operations if requested
         if apply_morphology:
             occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'close')
             occupancy_grid = self.apply_morphological_operations(occupancy_grid, 'open')
