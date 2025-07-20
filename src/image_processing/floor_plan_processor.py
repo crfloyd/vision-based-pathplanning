@@ -20,11 +20,11 @@ class FloorPlanProcessor:
     
     def __init__(self, 
                  obstacle_threshold: int = 127,
-                 blur_kernel_size: int = 9,  # Bigger blur to kill plank noise
-                 canny_low: int = 150,  # Even higher low to skip weak gradients
-                 canny_high: int = 250,  # Tighter high for major edges only
+                 blur_kernel_size: int = 39,
+                 canny_low: int = 150,
+                 canny_high: int = 250, 
                  contour_min: int = 500,
-                 morph_size: int = 7):  # Larger for aggressive cleaning
+                 morph_size: int = 7):
         """
         Initialize the floor plan processor.
         
@@ -102,7 +102,7 @@ class FloorPlanProcessor:
             med = np.median(image)
             low = int(max(0, (1.0 - sigma) * med))
             high = int(min(255, (1.0 + sigma) * med))
-            return cv2.Canny(image, low, high)  # Was fixed 50/150, now adaptive
+            return cv2.Canny(image, low, high)
         
         elif method == 'sobel':
             sobelx = cv2.Sobel(image, cv2.CV_64F, 1, 0, ksize=3)
@@ -124,7 +124,7 @@ class FloorPlanProcessor:
         if len(calibration_points) != 16:
             raise ValueError("Need 16 values: 8 for 4 source points (x,y pairs), 8 for 4 destination points.")
         
-        src_pts = np.array(calibration_points[:8], dtype="float32").reshape(-1, 2)  # Reshape to (4, 2)
+        src_pts = np.array(calibration_points[:8], dtype="float32").reshape(-1, 2)
         dst_pts = np.array(calibration_points[8:], dtype="float32").reshape(-1, 2)
         
         H, _ = cv2.findHomography(src_pts, dst_pts)
@@ -160,7 +160,7 @@ class FloorPlanProcessor:
         
         # Fill large contours as obstacles (filter small noise)
         for cnt in contours:
-            if cv2.contourArea(cnt) > self.contour_min:  # Use the instance var for tuning
+            if cv2.contourArea(cnt) > self.contour_min:
                 cv2.drawContours(mask, [cnt], -1, 255, -1)
         
         return mask

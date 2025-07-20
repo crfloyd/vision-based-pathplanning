@@ -43,8 +43,8 @@ class CameraCapture:
                 with self.frame_queue.mutex:  # Drop old frames
                     self.frame_queue.queue.clear()
                 self.frame_queue.put(frame)
-            else:
-                print("Debug: cap.read() failed - no frame.")  # Debug: If failing, why?
+            # else:
+            #     print("Debug: cap.read() failed - no frame.")  # Debug: If failing, why?
             time.sleep(1.0 / self.frame_rate)  # Respect rate
 
     def get_frame(self):
@@ -54,10 +54,10 @@ class CameraCapture:
         """
         try:
             frame = self.frame_queue.get(timeout=0.5)  # Increased to 0.5s for startup lag
-            print("Debug: Got frame from queue.")  # Debug: Confirm queue pop
+            # print("Debug: Got frame from queue.")  # Debug: Confirm queue pop
             return frame
         except queue.Empty:
-            print("Debug: Queue empty - no frame yet.")  # Debug msg
+            # print("Debug: Queue empty - no frame yet.")  # Debug msg
             return None
 
     def release(self):

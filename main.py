@@ -507,10 +507,10 @@ def main():
             
             frame = camera.get_frame()
             if frame is None:
-                print("Debug: Frame is None - breaking.")
+                # print("Debug: Frame is None - breaking.")
                 break
             
-            print("Debug: Starting processing...")
+            # print("Debug: Starting processing...")
             processing_result = navigation_system.load_and_process_floor_plan(
                 frame,
                 edge_method='canny',
@@ -520,7 +520,7 @@ def main():
                 homography_matrix=H,
                 fast_mode=args.fast
             )
-            print(f"Debug: Processing success: {processing_result['success']}")
+            # print(f"Debug: Processing success: {processing_result['success']}")
             if 'error' in processing_result:
                 print(f"Debug: Processing error: {processing_result['error']}")
             
@@ -533,35 +533,35 @@ def main():
                 
                 frame_count += 1
                 if frame_count % args.plan_every == 0:  # Only plan every N frames
-                    print("Debug: Starting navigation planning... (this frame)")
+                    # print("Debug: Starting navigation planning... (this frame)")
                     nav_result = navigation_system.plan_navigation(
                         tuple(args.start), tuple(args.goal), algorithm=args.algorithm
                     )
                     # print(f"Debug: Navigation success: {nav_result['success']}")
                     if 'error' in nav_result:
                         print(f"Debug: Navigation error: {nav_result['error']}")
-                        if 'stats' in nav_result:
-                            print(f"Debug: Stats: {nav_result['stats']}")
+                        # if 'stats' in nav_result:
+                            # print(f"Debug: Stats: {nav_result['stats']}")
                     
                     if nav_result['success']:
                         last_nav_result = nav_result  # Cache for skip frames
                 else:
-                    print("Debug: Skipping planning this frame for FPS.")
+                    # print("Debug: Skipping planning this frame for FPS.")
                     nav_result = last_nav_result or {'success': False, 'error': 'No path yet', 'path': [], 'start': args.start, 'goal': args.goal}  # Fallback
                 
                 # Call viz with (cached) nav_result
-                print("Debug: Calling visualize_with_cv2...")
+                # print("Debug: Calling visualize_with_cv2...")
                 cv2.namedWindow('Navigation Pipeline', cv2.WINDOW_NORMAL)
                 navigation_system.visualize_with_cv2(nav_result, raw_frame=frame)
-                print("Debug: Visualize called - should show window now.")
+                # print("Debug: Visualize called - should show window now.")
             
             # Wait for key (non-blocking, pumps GUI events)
             key = cv2.waitKey(1)
             if key & 0xFF == ord('q'):
-                print("Debug: Q pressed - breaking.")
+                # print("Debug: Q pressed - breaking.")
                 break
-            elif key != -1:
-                print(f"Debug: Key pressed: {key}")
+            # elif key != -1:
+            #     print(f"Debug: Key pressed: {key}")
             elapsed = time.time() - start_time
             fps = 1.0 / elapsed if elapsed > 0 else 0
             print(f"FPS: {fps:.2f}")
@@ -610,16 +610,16 @@ def main():
                 )
                 if nav_result['success']:
                     # print("Navigation successful!")
-                    print(f"   Path length: {nav_result['path_length_grid']} steps")
-                    print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
-                    print(f"   Algorithm: {nav_result['algorithm']}")
+                    # print(f"   Path length: {nav_result['path_length_grid']} steps")
+                    # print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
+                    # print(f"   Algorithm: {nav_result['algorithm']}")
                     
                     # Create visualization
-                    print("Creating visualization...")
+                    # print("Creating visualization...")
                     navigation_system.visualize_complete_pipeline(nav_result)
-                    print("Visualization complete!")
-                else:
-                    print(f"Navigation failed: {nav_result['error']}")
+                    # print("Visualization complete!")
+                # else:
+                #     print(f"Navigation failed: {nav_result['error']}")
         else:
             if not processing_result['success']:
                 print(f"Processing failed: {processing_result.get('error', 'Unknown error')}")
@@ -661,16 +661,16 @@ def main():
                 )
                 if nav_result['success']:
                     # print("Navigation successful!")
-                    print(f"   Path length: {nav_result['path_length_grid']} steps")
-                    print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
-                    print(f"   Algorithm: {nav_result['algorithm']}")
+                    # print(f"   Path length: {nav_result['path_length_grid']} steps")
+                    # print(f"   Path cost: {nav_result['stats']['path_cost']:.2f}")
+                    # print(f"   Algorithm: {nav_result['algorithm']}")
                     
                     # Create visualization
-                    print("Creating visualization...")
+                    # print("Creating visualization...")
                     navigation_system.visualize_complete_pipeline(nav_result)
-                    print("Visualization complete!")
-                else:
-                    print(f"Navigation failed: {nav_result['error']}")
+                    # print("Visualization complete!")
+                # else:
+                #     print(f"Navigation failed: {nav_result['error']}")
         else:
             if not processing_result['success']:
                 print(f"Processing failed: {processing_result.get('error', 'Unknown error')}")
